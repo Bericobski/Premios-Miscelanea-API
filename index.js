@@ -7,13 +7,12 @@ const usersRouter = require('./routes/users');
 const awardCategoriesRouter = require('./routes/awardCategories');
 const gamesRouter = require('./routes/games');
 const votesRouter = require('./routes/votes');
-const { UPLOADS_DIR } = require('./routes/users');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-const PORT = 3001;
+const PORT = process.env.PORT || 3001;
 
 // 2. Define routes: a route = an HTTP method (GET, POST, ...) + a path.
 //    Each route gets a handler function: (req, res) => { ... }
@@ -31,15 +30,18 @@ app.get('/api/hello', (req, res) => {
     res.json({ message: 'Hello World' });
 });
 
-// Uploaded profile pictures are served as plain static files.
-app.use('/uploads', express.static(UPLOADS_DIR));
-
 app.use('/api/users', usersRouter);
 app.use('/api/award-categories', awardCategoriesRouter);
 app.use('/api/games', gamesRouter);
 app.use('/api/votes', votesRouter);
 
-// 3. Start listening for incoming connections on PORT.
-app.listen(PORT, () => {
-    console.log(`Server listening on http://localhost:${PORT}`);
-});
+// 3. Start listening for incoming connections on PORT, but only when run directly
+//    (`npm start`). On Vercel there is no long-running server: Vercel imports the
+//    exported app below and calls it for each request.
+if (require.main === module) {
+    app.listen(PORT, () => {
+        console.log(`Server listening on http://localhost:${PORT}`);
+    });
+}
+
+module.exports = app;

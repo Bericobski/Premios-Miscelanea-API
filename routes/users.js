@@ -1,8 +1,4 @@
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
 const express = require('express');
-const multer = require('multer');
 const pool = require('../db');
 const { FieldValue } = require('firebase-admin/firestore');
 const { auth, db } = require('../firebaseAdmin');
@@ -164,14 +160,11 @@ router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
         return res.status(400).json({ error: 'Invalid user id' });
     }
 
-    const [targets] = await pool.query(
-        'SELECT firebase_uid AS firebaseUid, profile_picture AS profilePicture FROM users WHERE id = ?',
-        [id]
-    );
+    const [targets] = await pool.query('SELECT firebase_uid AS firebaseUid FROM users WHERE id = ?', [id]);
     if (targets.length === 0) {
         return res.status(404).json({ error: 'User not found' });
     }
-    const { firebaseUid, profilePicture } = targets[0];
+    const { firebaseUid } = targets[0];
 
     // MySQL and Firebase Auth are deleted together: if Firebase fails, the MySQL deletion is rolled back.
     const connection = await pool.getConnection();
@@ -196,8 +189,6 @@ router.delete('/:id', verifyToken, requireAdmin, async (req, res) => {
     } finally {
         connection.release();
     }
-
-    deleteUploadedPicture(profilePicture);
 
     const result = { deleted: true, self: firebaseUid === req.firebaseUser.uid, votesDeleted };
     try {
@@ -237,66 +228,46 @@ router.put('/me', verifyToken, async (req, res) => {
     res.json(rows[0]);
 });
 
-const UPLOADS_DIR = path.join(__dirname, '..', 'uploads', 'profile-pictures');
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+const MAX_PICTURE_URL_LENGTH = 500;
 
-const PICTURE_TYPES = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
-const MAX_PICTURE_BYTES = 2 * 1024 * 1024;
-
-const pictureUpload = multer({
-    storage: multer.diskStorage({
-        destination: UPLOADS_DIR,
-        filename: (req, file, cb) => cb(null, `${crypto.randomUUID()}${PICTURE_TYPES[file.mimetype]}`),
-    }),
-    limits: { fileSize: MAX_PICTURE_BYTES, files: 1 },
-    fileFilter: (req, file, cb) => cb(null, file.mimetype in PICTURE_TYPES),
-}).single('picture');
-
-// Runs multer and turns its errors into 400 responses instead of an unhandled 500.
-function handlePictureUpload(req, res, next) {
-    pictureUpload(req, res, (err) => {
-        if (err) {
-            const error = err.code === 'LIMIT_FILE_SIZE' ? 'The picture must be at most 2 MB' : 'Could not read the upload';
-            return res.status(400).json({ error });
-        }
-        next();
-    });
+// Returns the trimmed http(s) URL, '' to remove the picture, or null when the value isn't a valid link.
+function parsePictureUrl(value) {
+    const url = typeof value === 'string' ? value.trim() : '';
+    if (!url) return '';
+    if (url.length > MAX_PICTURE_URL_LENGTH) return null;
+    try {
+        const { protocol } = new URL(url);
+        return protocol === 'http:' || protocol === 'https:' ? url : null;
+    } catch {
+        return null;
+    }
 }
 
 // Email/password users only: Google accounts keep the photo from their Google profile.
 function requirePasswordAccount(req, res, next) {
     if (req.firebaseUser.signInProvider !== 'password') {
-        return res.status(403).json({ error: 'Only accounts that sign in with email and password can upload a picture' });
+        return res.status(403).json({ error: 'Only accounts that sign in with email and password can change their picture' });
     }
     next();
 }
 
-// Removes a previously uploaded picture from disk. Pictures hosted elsewhere (Google) are left alone.
-function deleteUploadedPicture(url) {
-    if (!url || !url.includes('/uploads/profile-pictures/')) return;
-    fs.unlink(path.join(UPLOADS_DIR, path.basename(url)), () => {});
-}
-
-router.post('/me/profile-picture', verifyToken, requirePasswordAccount, handlePictureUpload, async (req, res) => {
-    if (!req.file) {
-        return res.status(400).json({ error: 'Choose a JPG, PNG, WEBP or GIF image' });
+// Sets the profile picture to a link of an image hosted online (an empty url removes it).
+router.put('/me/profile-picture', verifyToken, requirePasswordAccount, async (req, res) => {
+    const url = parsePictureUrl((req.body || {}).url);
+    if (url === null) {
+        return res.status(400).json({ error: 'Enter a valid image link starting with http:// or https://' });
     }
 
-    const [existing] = await pool.query('SELECT profile_picture AS profilePicture FROM users WHERE firebase_uid = ?', [
+    const [result] = await pool.query('UPDATE users SET profile_picture = ? WHERE firebase_uid = ?', [
+        url || null,
         req.firebaseUser.uid,
     ]);
-    if (existing.length === 0) {
-        fs.unlink(req.file.path, () => {});
+    if (result.affectedRows === 0) {
         return res.status(404).json({ error: 'User not provisioned yet' });
     }
-
-    const url = `${req.protocol}://${req.get('host')}/uploads/profile-pictures/${req.file.filename}`;
-    await pool.query('UPDATE users SET profile_picture = ? WHERE firebase_uid = ?', [url, req.firebaseUser.uid]);
-    deleteUploadedPicture(existing[0].profilePicture);
 
     const [rows] = await pool.query(`${SELECT_PROFILE} WHERE firebase_uid = ?`, [req.firebaseUser.uid]);
     res.json(rows[0]);
 });
 
 module.exports = router;
-module.exports.UPLOADS_DIR = UPLOADS_DIR;
