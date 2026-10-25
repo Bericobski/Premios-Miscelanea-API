@@ -7,6 +7,7 @@ const usersRouter = require('./routes/users');
 const awardCategoriesRouter = require('./routes/awardCategories');
 const gamesRouter = require('./routes/games');
 const votesRouter = require('./routes/votes');
+const { UPLOADS_DIR } = require('./routes/users');
 
 const app = express();
 app.use(cors());
@@ -29,6 +30,9 @@ app.get('/', (req, res) => {
 app.get('/api/hello', (req, res) => {
     res.json({ message: 'Hello World' });
 });
+
+// Uploaded profile pictures are served as plain static files.
+app.use('/uploads', express.static(UPLOADS_DIR));
 
 app.use('/api/users', usersRouter);
 app.use('/api/award-categories', awardCategoriesRouter);
